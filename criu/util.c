@@ -441,27 +441,6 @@ static int service_fd_base;
 /* Id of current process in shared fdt */
 static int service_fd_id = 0;
 
-int init_service_fd(void)
-{
-	struct rlimit64 rlimit;
-
-	/*
-	 * Service FDs are those that most likely won't
-	 * conflict with any 'real-life' ones
-	 */
-
-	if (syscall(__NR_prlimit64, getpid(), RLIMIT_NOFILE, NULL, &rlimit)) {
-		pr_perror("Can't get rlimit");
-		return -1;
-	}
-
-	service_fd_rlim_cur = (int)rlimit.rlim_cur;
-	service_fd_base = service_fd_rlim_cur;
-	BUG_ON(service_fd_base < SERVICE_FD_MAX);
-
-	return 0;
-}
-
 static int __get_service_fd(enum sfd_type type, int service_fd_id)
 {
 	return service_fd_base - type - SERVICE_FD_MAX * service_fd_id;
@@ -560,20 +539,20 @@ static void move_service_fd(struct pstree_item *me, int type, int new_id, int ne
 
 static int choose_service_fd_base(struct pstree_item *me)
 {
-	int nr, real_nr, fdt_nr = 1, id = rsti(me)->service_fd_id;
+	int nr = -1, real_nr, fdt_nr = 1, id = rsti(me)->service_fd_id;
 
-	if (rsti(me)->fdt) {
-		/* The base is set by owner of fdt (id 0) */
-		if (id != 0)
-			return service_fd_base;
-		fdt_nr = rsti(me)->fdt->nr;
+	if (me != NULL) {
+		if (rsti(me)->fdt) {
+			/* The base is set by owner of fdt (id 0) */
+			if (id != 0)
+				return service_fd_base;
+			fdt_nr = rsti(me)->fdt->nr;
+		}
+		/* Now find process's max used fd number */
+		if (!list_empty(&rsti(me)->fds))
+			nr = list_entry(rsti(me)->fds.prev,
+					struct fdinfo_list_entry, ps_list)->fe->fd;
 	}
-	/* Now find process's max used fd number */
-	if (!list_empty(&rsti(me)->fds))
-		nr = list_entry(rsti(me)->fds.prev,
-				struct fdinfo_list_entry, ps_list)->fe->fd;
-	else
-		nr = -1;
 
 	nr = max(nr, inh_fd_max);
 	/*
@@ -605,6 +584,27 @@ static int choose_service_fd_base(struct pstree_item *me)
 	}
 
 	return nr;
+}
+
+int init_service_fd(void)
+{
+	struct rlimit64 rlimit;
+
+	/*
+	 * Service FDs are those that most likely won't
+	 * conflict with any 'real-life' ones
+	 */
+
+	if (syscall(__NR_prlimit64, getpid(), RLIMIT_NOFILE, NULL, &rlimit)) {
+		pr_perror("Can't get rlimit");
+		return -1;
+	}
+
+	service_fd_rlim_cur = (int)rlimit.rlim_cur;
+	service_fd_base = choose_service_fd_base(NULL);
+	BUG_ON(service_fd_base < SERVICE_FD_MAX);
+
+	return 0;
 }
 
 int clone_service_fd(struct pstree_item *me)
